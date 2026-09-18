@@ -28,6 +28,10 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Max. plausible increase of the CT energy counters between two polls (in Wh).
+# Larger jumps are treated as garbage values from an incomplete device response.
+MAX_CT_ENERGY_STEP_WH = 50_000
+
 
 class MarstekMultiDeviceCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from multiple Marstek devices."""
@@ -276,6 +280,8 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Staleness tracking - track last successful update per category
         self.category_last_updated: dict[str, float] = {}
+        # Last valid CT energy counters (Wh) - used to reject resets/spikes
+        self._last_ct_energy: dict[str, float] = {}
         self.STALENESS_THRESHOLD = 3  # missed updates before invalidation
         self.STATIC_CATEGORIES = {"device", "wifi", "ble", "_diagnostic", "aggregates"}
 
@@ -532,14 +538,35 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
                 em_status = None
 
             if em_status:
-                if "input_energy" in em_status:
-                    em_status["input_energy"] = self.compatibility.scale_value(
-                        em_status["input_energy"], "ct_energy"
+                ct_ok = em_status.get("ct_state") == 1
+                for key in ("input_energy", "output_energy"):
+                    raw = em_status.get(key)
+                    val = (
+                        self.compatibility.scale_value(raw, "ct_energy")
+                        if raw is not None
+                        else None
                     )
-                if "output_energy" in em_status:
-                    em_status["output_energy"] = self.compatibility.scale_value(
-                        em_status["output_energy"], "ct_energy"
+                    prev = self._last_ct_energy.get(key)
+                    invalid = (
+                        not ct_ok
+                        or val is None
+                        or val <= 0
+                        or (
+                            prev is not None
+                            and (val < prev or val - prev > MAX_CT_ENERGY_STEP_WH)
+                        )
                     )
+                    if invalid:
+                        if raw is not None:
+                            _LOGGER.debug(
+                                "Ignoring implausible CT %s: raw=%s scaled=%s prev=%s ct_state=%s",
+                                key, raw, val, prev, em_status.get("ct_state"),
+                            )
+                        # None -> sensor shows "unknown" instead of 0 (no bogus reset)
+                        em_status[key] = None
+                    else:
+                        em_status[key] = val
+                        self._last_ct_energy[key] = val
                 data["em"] = em_status
                 self.category_last_updated["em"] = time.time()
                 had_success = True
