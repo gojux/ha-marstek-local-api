@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
 
   # One-off unit tests against the real Home Assistant runtime:
-  #   docker compose run --rm test
+  #   docker compose run --rm test   (runs test/unit_*.py; test_tool.py is a manual CLI tool)
   test:
     image: ghcr.io/home-assistant/home-assistant:2026.9.3
     profiles: ["test"]
@@ -18,4 +18,4 @@ services:
       - .:/repo:ro
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
-    entrypoint: ["python3", "-m", "unittest", "discover", "-s", "test", "-p", "test_ct_net.py", "-v"]
+    entrypoint: ["python3", "-m", "unittest", "discover", "-s", "test", "-p", "unit_*.py", "-v"]
