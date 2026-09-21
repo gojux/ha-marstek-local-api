@@ -133,5 +133,24 @@ class BatteryPowerSensorTest(unittest.TestCase):
         )
 
 
+class SensorNamingTest(unittest.TestCase):
+    def test_battery_sensors_are_named_consistently(self):
+        for description in sensor_module.SENSOR_TYPES:
+            if description.key.startswith("battery_"):
+                self.assertTrue(
+                    description.name.startswith("Battery "), description.name
+                )
+
+    def test_split_power_sensors_are_disabled_by_default(self):
+        descriptions = {d.key: d for d in sensor_module.SENSOR_TYPES}
+        for key in ("battery_power_in", "battery_power_out"):
+            self.assertFalse(descriptions[key].entity_registry_enabled_default)
+        self.assertTrue(descriptions["battery_power"].entity_registry_enabled_default)
+
+    def test_sensor_names_are_unique(self):
+        names = [d.name for d in sensor_module.SENSOR_TYPES]
+        self.assertEqual(len(names), len(set(names)))
+
+
 if __name__ == "__main__":
     unittest.main()
