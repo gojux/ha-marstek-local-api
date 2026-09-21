@@ -86,6 +86,7 @@ After setup you can return to **Settings → Devices & Services → Marstek Loca
 | **Energy meter / CT** | `ct_phase_a_power`, `ct_phase_b_power`, `ct_phase_c_power` | W | Per-phase measurements (if CTs installed) | 1x | 60 |
 |  | `ct_total_power` | W | CT aggregate | 1x | 60 |
 |  | `ct_input_energy` / `ct_output_energy` | kWh | Lifetime CT energy | 1x | 60 |
+|  | `ct_net_import_energy` / `ct_net_export_energy` | kWh | Netted CT energy: per poll the input and output deltas are offset against each other, the surplus is added to net import or net export (persisted across restarts, starts at 0) | 1x | 60 |
 | **Mode** | `operating_mode` | text | Current mode (read-only sensor) | 5x | 300 |
 | **PV (Venus D only)** | `pv_power`, `pv_voltage`, `pv_current` | W / V / A | MPPT telemetry | 5x | 300 |
 | **Network** | `wifi_rssi` | dBm | Wi-Fi signal | 10x | 600 |

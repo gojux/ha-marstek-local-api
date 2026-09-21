@@ -10,6 +10,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import MarstekAPIError, MarstekUDPClient
@@ -31,6 +32,9 @@ _LOGGER = logging.getLogger(__name__)
 # Max. plausible increase of the CT energy counters between two polls (in Wh).
 # Larger jumps are treated as garbage values from an incomplete device response.
 MAX_CT_ENERGY_STEP_WH = 50_000
+
+CT_NET_STORAGE_VERSION = 1
+CT_NET_SAVE_DELAY = 60
 
 
 class MarstekMultiDeviceCoordinator(DataUpdateCoordinator):
@@ -282,6 +286,21 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
         self.category_last_updated: dict[str, float] = {}
         # Last valid CT energy counters (Wh) - used to reject resets/spikes
         self._last_ct_energy: dict[str, float] = {}
+        # Netted CT energy (Wh): input/output deltas are offset against each other per
+        # poll; the surplus is accumulated as net import or net export. Persisted so the
+        # lifetime counters survive restarts.
+        self._ct_net: dict[str, float | None] = {
+            "last_input": None,
+            "last_output": None,
+            "import": 0.0,
+            "export": 0.0,
+        }
+        self._ct_net_loaded = False
+        self._ct_net_store = Store(
+            hass,
+            CT_NET_STORAGE_VERSION,
+            f"marstek_local_api.ct_net.{device_mac or (config_entry.entry_id if config_entry else device_name)}",
+        )
         self.STALENESS_THRESHOLD = 3  # missed updates before invalidation
         self.STATIC_CATEGORIES = {"device", "wifi", "ble", "_diagnostic", "aggregates"}
 
@@ -299,6 +318,35 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
         )
         # Default coordinator timeout (10s) is too short for staged polling + retries.
         self._timeout = COMMAND_TIMEOUT * COMMAND_MAX_ATTEMPTS + 5
+
+    async def _async_update_ct_net(self, em_status: dict[str, Any]) -> None:
+        """Accumulate netted CT import/export energy and add it to the EM data."""
+        if not self._ct_net_loaded:
+            self._ct_net_loaded = True
+            stored = await self._ct_net_store.async_load()
+            if stored:
+                for key in self._ct_net:
+                    value = stored.get(key)
+                    if isinstance(value, (int, float)):
+                        self._ct_net[key] = float(value)
+
+        cur_in = em_status.get("input_energy")
+        cur_out = em_status.get("output_energy")
+        # Only advance when both counters are valid, otherwise the delta of one
+        # counter would be netted against nothing.
+        if cur_in is not None and cur_out is not None:
+            last_in = self._ct_net["last_input"]
+            last_out = self._ct_net["last_output"]
+            if last_in is not None and last_out is not None:
+                net = (cur_in - last_in) - (cur_out - last_out)
+                key = "import" if net > 0 else "export"
+                self._ct_net[key] += abs(net)
+            self._ct_net["last_input"] = cur_in
+            self._ct_net["last_output"] = cur_out
+            self._ct_net_store.async_delay_save(lambda: dict(self._ct_net), CT_NET_SAVE_DELAY)
+
+        em_status["net_import_energy"] = self._ct_net["import"]
+        em_status["net_export_energy"] = self._ct_net["export"]
 
     def _update_device_version(self, device_info: dict) -> None:
         """Update device firmware/hardware version and reinitialize compatibility matrix if changed.
@@ -567,6 +615,7 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
                     else:
                         em_status[key] = val
                         self._last_ct_energy[key] = val
+                await self._async_update_ct_net(em_status)
                 data["em"] = em_status
                 self.category_last_updated["em"] = time.time()
                 had_success = True
