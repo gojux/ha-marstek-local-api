@@ -345,22 +345,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         """Get the options flow for this handler."""
-        return OptionsFlow(config_entry)
+        return OptionsFlow()
 
 
 class OptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for Marstek Local API."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialise the options flow."""
-        self.config_entry = config_entry
-        self._devices: list[dict[str, Any]] = list(config_entry.data.get("devices", []))
+    def __init__(self) -> None:
+        """Initialise the options flow.
+
+        The config entry is provided by the base class and is not available yet, so
+        the device list is loaded in async_step_init.
+        """
+        self._devices: list[dict[str, Any]] = []
         self._discovered_devices: list[dict[str, Any]] = []
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Entry-point for options flow; present available actions."""
+        self._devices = list(self.config_entry.data.get("devices", []))
         actions: dict[str, str] = {
             "scan_interval": "Adjust update interval",
         }
@@ -399,7 +403,9 @@ class OptionsFlow(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Adjust polling interval."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            return self.async_create_entry(
+                title="", data={**self.config_entry.options, **user_input}
+            )
 
         return self.async_show_form(
             step_id="scan_interval",
@@ -440,7 +446,7 @@ class OptionsFlow(config_entries.OptionsFlow):
             else:
                 current_device = self._devices[device_index]
                 if current_device.get("device") == new_name:
-                    return self.async_create_entry(title="", data={})
+                    return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
                 updated_devices = list(self._devices)
                 updated_device = dict(updated_devices[device_index])
@@ -453,7 +459,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     data=new_data,
                 )
                 self._devices = updated_devices
-                return self.async_create_entry(title="", data={})
+                return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
         default_index = 0
         default_name = (
@@ -520,7 +526,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                         data=new_data,
                     )
                     self._devices = updated_devices
-                    return self.async_create_entry(title="", data={})
+                    return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
         return self.async_show_form(
             step_id="remove_device",
@@ -595,7 +601,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                         data=new_data,
                     )
                     self._devices = updated_devices
-                    return self.async_create_entry(title="", data={})
+                    return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
         return self.async_show_form(
             step_id="add_device",
@@ -649,7 +655,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                         data=new_data,
                     )
                     self._devices = updated_devices
-                    return self.async_create_entry(title="", data={})
+                    return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
             except CannotConnect:
                 errors["base"] = "cannot_connect"

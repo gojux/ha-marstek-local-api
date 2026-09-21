@@ -6,6 +6,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .api import MarstekUDPClient
 from .const import (
@@ -30,6 +31,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     scan_interval = entry.options.get("scan_interval", DEFAULT_SCAN_INTERVAL)
 
     # Check if this is a multi-device or single-device entry
+    coordinator: MarstekDataUpdateCoordinator | MarstekMultiDeviceCoordinator
     if "devices" in entry.data:
         # Multi-device mode
         _LOGGER.info("Setting up multi-device entry with %d devices", len(entry.data["devices"]))
@@ -42,11 +44,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             config_entry=entry,
         )
 
-        # Set up device coordinators
-        await coordinator.async_setup()
+        try:
+            # Set up device coordinators
+            await coordinator.async_setup()
+            if not coordinator.device_coordinators:
+                raise ConfigEntryNotReady("Could not connect to any Marstek device")
 
-        # Fetch initial data
-        await coordinator.async_config_entry_first_refresh()
+            # Fetch initial data
+            await coordinator.async_config_entry_first_refresh()
+        except BaseException:
+            # Release the UDP sockets, otherwise every retry leaks a reference
+            await _async_disconnect(coordinator)
+            raise
 
     else:
         # Single device mode (legacy/backwards compatibility)
@@ -66,8 +75,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             await api.connect()
         except Exception as err:
-            _LOGGER.error("Failed to connect to Marstek device: %s", err)
-            return False
+            raise ConfigEntryNotReady(f"Failed to connect to Marstek device: {err}") from err
 
         # Create coordinator
         coordinator = MarstekDataUpdateCoordinator(
@@ -80,8 +88,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             config_entry=entry,
         )
 
-        # Fetch initial data
-        await coordinator.async_config_entry_first_refresh()
+        try:
+            # Fetch initial data
+            await coordinator.async_config_entry_first_refresh()
+        except BaseException:
+            await _async_disconnect(coordinator)
+            raise
 
     # Store coordinator
     hass.data[DOMAIN][entry.entry_id] = {
@@ -100,6 +112,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def _async_disconnect(
+    coordinator: MarstekDataUpdateCoordinator | MarstekMultiDeviceCoordinator,
+) -> None:
+    """Disconnect the UDP client(s) of a coordinator."""
+    if isinstance(coordinator, MarstekMultiDeviceCoordinator):
+        for device_coordinator in coordinator.device_coordinators.values():
+            await device_coordinator.api.disconnect()
+    else:
+        await coordinator.api.disconnect()
+
+
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload the config entry when options change."""
     await hass.config_entries.async_reload(entry.entry_id)
@@ -112,15 +135,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if unload_ok:
         # Disconnect API(s)
-        coordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
-
-        if isinstance(coordinator, MarstekMultiDeviceCoordinator):
-            # Disconnect all device APIs
-            for device_coordinator in coordinator.device_coordinators.values():
-                await device_coordinator.api.disconnect()
-        else:
-            # Single device coordinator
-            await coordinator.api.disconnect()
+        await _async_disconnect(hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR])
 
         # Remove entry from domain data
         hass.data[DOMAIN].pop(entry.entry_id)

@@ -39,7 +39,7 @@ jobs:
           fi
 
           TRIMMED_TAG="${TAG_NAME#v}"
-          MANIFEST_VERSION=$(jq -r '.version' custom_components/marstek/manifest.json)
+          MANIFEST_VERSION=$(jq -r '.version' custom_components/marstek_local_api/manifest.json)
 
           echo "Tag: ${TAG_NAME}"
           echo "Manifest version: ${MANIFEST_VERSION}"
