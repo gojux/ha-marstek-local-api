@@ -141,14 +141,16 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
         value_fn=lambda data: data.get("es", {}).get("bat_power"),
         category="es",
     ),
-    # Calculated battery sensors (Design Doc §174-202)
+    # Calculated battery sensors (Design Doc §174-202). They use bat_power (power at the
+    # battery, positive = charging), not ongrid_power, which is measured on the AC grid
+    # side: after the conversion losses when discharging, before them when charging.
     MarstekSensorEntityDescription(
         key="battery_power_in",
         name="Power in",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: max(0, -(data.get("es", {}).get("ongrid_power", 0) or 0)),
+        value_fn=lambda data: max(0, data.get("es", {}).get("bat_power", 0) or 0),
         category="es",
     ),
     MarstekSensorEntityDescription(
@@ -157,15 +159,15 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: max(0, data.get("es", {}).get("ongrid_power", 0) or 0),
+        value_fn=lambda data: max(0, -(data.get("es", {}).get("bat_power", 0) or 0)),
         category="es",
     ),
     MarstekSensorEntityDescription(
         key="battery_state",
         name="State",
         value_fn=lambda data: (
-            "charging" if (data.get("es", {}).get("ongrid_power", 0) or 0) < 0
-            else "discharging" if (data.get("es", {}).get("ongrid_power", 0) or 0) > 0
+            "charging" if (data.get("es", {}).get("bat_power", 0) or 0) > 0
+            else "discharging" if (data.get("es", {}).get("bat_power", 0) or 0) < 0
             else "idle"
         ),
         category="es",

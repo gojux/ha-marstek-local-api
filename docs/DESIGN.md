@@ -137,7 +137,7 @@ marstek_local_api/
 | bat_cap | number | ✅ Sensor | Total battery capacity (Wh) |
 | bat_power | number | ✅ Sensor | Battery power (W, +charge/-discharge) |
 | pv_power | number | ✅ Sensor | Solar charging power (W) |
-| ongrid_power | number | ✅ Sensor | Grid-tied power (W) |
+| ongrid_power | number | ✅ Sensor | AC grid-side power (W), measured after the conversion losses when discharging and before them when charging |
 | offgrid_power | number | ✅ Sensor | Off-grid power (W) |
 | total_pv_energy | number | ✅ Sensor | Total solar energy generated (Wh) |
 | total_grid_output_energy | number | ✅ Sensor | Total grid export energy (Wh) |
