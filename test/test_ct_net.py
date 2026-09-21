@@ -115,5 +115,66 @@ class CtNetEnergyTest(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(em["net_export_energy"], 0.0)
 
 
+class EsEnergyPlausibilityTest(unittest.IsolatedAsyncioTestCase):
+    """ES lifetime counters must never expose garbage values (statistics outliers)."""
+
+    async def asyncSetUp(self):
+        await CtNetEnergyTest.asyncSetUp(self)
+
+    async def asyncTearDown(self):
+        await CtNetEnergyTest.asyncTearDown(self)
+
+    _make_coordinator = CtNetEnergyTest._make_coordinator
+
+    async def _poll_es(self, coordinator, api, grid_in):
+        api.get_es_status.return_value = {
+            "total_grid_input_energy": grid_in,
+            "total_grid_output_energy": 1000,
+            "total_load_energy": 1000,
+            "total_pv_energy": 0,
+        }
+        api.get_em_status.return_value = None
+        return (await coordinator._async_update_data())["es"]
+
+    async def test_garbage_and_drops_are_rejected(self):
+        coordinator, api = self._make_coordinator()
+        self.assertEqual((await self._poll_es(coordinator, api, 100_000))["total_grid_input_energy"], 100_000)
+
+        # 0xFFFFFFFF-style garbage and a drop to 0 must not reach the sensor
+        for bad in (4_294_967_295, 0, 90_000, 100_000 + 60_000):
+            es = await self._poll_es(coordinator, api, bad)
+            self.assertIsNone(es["total_grid_input_energy"], bad)
+
+        # Valid reading continues from the last good baseline
+        es = await self._poll_es(coordinator, api, 100_500)
+        self.assertEqual(es["total_grid_input_energy"], 100_500)
+
+    async def test_garbage_as_first_value_is_rejected(self):
+        coordinator, api = self._make_coordinator()
+        es = await self._poll_es(coordinator, api, 4_294_967_295)
+        self.assertIsNone(es["total_grid_input_energy"])
+        es = await self._poll_es(coordinator, api, 100_000)
+        self.assertEqual(es["total_grid_input_energy"], 100_000)
+
+    async def test_persistent_new_value_is_accepted_as_baseline(self):
+        coordinator, api = self._make_coordinator()
+        await self._poll_es(coordinator, api, 100_000)
+        # Real counter reset: value stays low for several polls
+        for _ in range(coordinator_module.ENERGY_REJECT_LIMIT - 1):
+            es = await self._poll_es(coordinator, api, 500)
+            self.assertIsNone(es["total_grid_input_energy"])
+        es = await self._poll_es(coordinator, api, 500)
+        self.assertEqual(es["total_grid_input_energy"], 500)
+
+    async def test_aggregate_is_unknown_if_a_device_value_is_invalid(self):
+        multi = coordinator_module.MarstekMultiDeviceCoordinator(self.hass, [])
+        good = MagicMock(data={"es": {"total_grid_input_energy": 1000}})
+        bad = MagicMock(data={"es": {"total_grid_input_energy": None}})
+        multi.device_coordinators = {"a": good, "b": bad}
+        self.assertIsNone(multi._calculate_aggregates()["total_grid_import"])
+        bad.data = {"es": {"total_grid_input_energy": 2000}}
+        self.assertEqual(multi._calculate_aggregates()["total_grid_import"], 3000)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,9 +29,23 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Max. plausible increase of the CT energy counters between two polls (in Wh).
+# Max. plausible increase of an energy counter between two polls (in Wh).
 # Larger jumps are treated as garbage values from an incomplete device response.
-MAX_CT_ENERGY_STEP_WH = 50_000
+MAX_ENERGY_STEP_WH = 50_000
+# Max. plausible absolute value of an energy counter (in Wh). Catches garbage such as
+# 0xFFFFFFFF that would otherwise be accepted as the first value after a restart.
+MAX_ENERGY_TOTAL_WH = 200_000_000
+# After this many consecutive rejections the current value is accepted as the new
+# baseline, so a bad baseline or a real counter reset cannot block the sensor forever.
+ENERGY_REJECT_LIMIT = 5
+
+# Lifetime energy counters of ES.GetStatus that feed total_increasing sensors.
+ES_ENERGY_KEYS = (
+    "total_pv_energy",
+    "total_grid_input_energy",
+    "total_grid_output_energy",
+    "total_load_energy",
+)
 
 CT_NET_STORAGE_VERSION = 1
 CT_NET_SAVE_DELAY = 60
@@ -190,23 +204,19 @@ class MarstekMultiDeviceCoordinator(DataUpdateCoordinator):
         else:
             aggregates["combined_state"] = "idle"
 
-        # Energy aggregates
-        aggregates["total_pv_energy"] = sum(
-            d.get("es", {}).get("total_pv_energy", 0) or 0
-            for d in all_device_data
-        )
-        aggregates["total_grid_import"] = sum(
-            d.get("es", {}).get("total_grid_input_energy", 0) or 0
-            for d in all_device_data
-        )
-        aggregates["total_grid_export"] = sum(
-            d.get("es", {}).get("total_grid_output_energy", 0) or 0
-            for d in all_device_data
-        )
-        aggregates["total_load_energy"] = sum(
-            d.get("es", {}).get("total_load_energy", 0) or 0
-            for d in all_device_data
-        )
+        # Energy aggregates. If any device reports an invalid (None) value the sum is
+        # unknown: a partial sum would drop and jump back, which total_increasing
+        # sensors record as a reset and a huge spike.
+        for aggregate_key, es_key in (
+            ("total_pv_energy", "total_pv_energy"),
+            ("total_grid_import", "total_grid_input_energy"),
+            ("total_grid_export", "total_grid_output_energy"),
+            ("total_load_energy", "total_load_energy"),
+        ):
+            values = [d.get("es", {}).get(es_key, 0) for d in all_device_data]
+            aggregates[aggregate_key] = (
+                None if any(v is None for v in values) else sum(values)
+            )
         aggregates["total_solar_power"] = sum(
             d.get("es", {}).get("pv_power", 0) or 0
             for d in all_device_data
@@ -284,8 +294,10 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Staleness tracking - track last successful update per category
         self.category_last_updated: dict[str, float] = {}
-        # Last valid CT energy counters (Wh) - used to reject resets/spikes
-        self._last_ct_energy: dict[str, float] = {}
+        # Last valid energy counters (Wh) and consecutive rejections per counter -
+        # used to reject resets/spikes that would corrupt the long-term statistics
+        self._last_energy: dict[str, float] = {}
+        self._energy_rejects: dict[str, int] = {}
         # Netted CT energy (Wh): input/output deltas are offset against each other per
         # poll; the surplus is accumulated as net import or net export. Persisted so the
         # lifetime counters survive restarts.
@@ -318,6 +330,38 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
         )
         # Default coordinator timeout (10s) is too short for staged polling + retries.
         self._timeout = COMMAND_TIMEOUT * COMMAND_MAX_ATTEMPTS + 5
+
+    def _accept_energy(self, key: str, val: float | None) -> bool:
+        """Return True if an energy counter value (Wh) is plausible and record it.
+
+        A counter must not be negative, absurdly large, decrease, or jump by more than
+        MAX_ENERGY_STEP_WH between two polls. Rejected values must not reach the
+        sensors: total_increasing sensors treat a drop as a reset, so a garbage
+        reading followed by a valid one produces a huge spike in the statistics.
+        """
+        prev = self._last_energy.get(key)
+        implausible = (
+            val is None
+            or val < 0
+            or val > MAX_ENERGY_TOTAL_WH
+            or (
+                prev is not None
+                and (val < prev or val - prev > MAX_ENERGY_STEP_WH)
+            )
+        )
+        if implausible:
+            rejects = self._energy_rejects.get(key, 0) + 1
+            in_bounds = val is not None and 0 <= val <= MAX_ENERGY_TOTAL_WH
+            if not (in_bounds and rejects >= ENERGY_REJECT_LIMIT):
+                self._energy_rejects[key] = rejects
+                return False
+            _LOGGER.warning(
+                "Accepting %s=%s as new baseline after %d rejected readings (prev=%s)",
+                key, val, rejects, prev,
+            )
+        self._energy_rejects[key] = 0
+        self._last_energy[key] = val
+        return True
 
     async def _async_update_ct_net(self, em_status: dict[str, Any]) -> None:
         """Accumulate netted CT import/export energy and add it to the EM data."""
@@ -545,6 +589,20 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
                         es_status["total_load_energy"], "total_load_energy"
                     )
 
+                for key in ES_ENERGY_KEYS:
+                    if key not in es_status:
+                        continue
+                    val = self.compatibility.scale_value(es_status[key], key)
+                    if self._accept_energy(f"es_{key}", val):
+                        es_status[key] = val
+                    else:
+                        _LOGGER.debug(
+                            "Ignoring implausible ES %s: raw=%s scaled=%s prev=%s",
+                            key, es_status[key], val, self._last_energy.get(f"es_{key}"),
+                        )
+                        # None -> sensor shows "unknown" instead of a bogus value
+                        es_status[key] = None
+
                 data["es"] = es_status
                 self.category_last_updated["es"] = time.time()
                 had_success = True
@@ -594,27 +652,19 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
                         if raw is not None
                         else None
                     )
-                    prev = self._last_ct_energy.get(key)
-                    invalid = (
-                        not ct_ok
-                        or val is None
-                        or val <= 0
-                        or (
-                            prev is not None
-                            and (val < prev or val - prev > MAX_CT_ENERGY_STEP_WH)
-                        )
-                    )
-                    if invalid:
+                    if ct_ok and val is not None and val > 0 and self._accept_energy(
+                        f"ct_{key}", val
+                    ):
+                        em_status[key] = val
+                    else:
                         if raw is not None:
                             _LOGGER.debug(
                                 "Ignoring implausible CT %s: raw=%s scaled=%s prev=%s ct_state=%s",
-                                key, raw, val, prev, em_status.get("ct_state"),
+                                key, raw, val, self._last_energy.get(f"ct_{key}"),
+                                em_status.get("ct_state"),
                             )
                         # None -> sensor shows "unknown" instead of 0 (no bogus reset)
                         em_status[key] = None
-                    else:
-                        em_status[key] = val
-                        self._last_ct_energy[key] = val
                 await self._async_update_ct_net(em_status)
                 data["em"] = em_status
                 self.category_last_updated["em"] = time.time()
