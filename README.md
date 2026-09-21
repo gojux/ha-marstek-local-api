@@ -75,13 +75,13 @@ After setup you can return to **Settings → Devices & Services → Marstek Loca
 |  | `battery_voltage` | V | Pack voltage | 1x | 60 |
 |  | `battery_current` | A | Pack current (positive = charge) | 1x | 60 |
 | **Energy system (ES)** | `battery_power` | W | Pack power (positive = charge) | 1x | 60 |
-|  | `battery_power_in` / `battery_power_out` | W | Split charge/discharge power | 1x | 60 |
+|  | `battery_power_in` / `battery_power_out` | W | Split charge/discharge power (disabled by default, enable manually) | 1x | 60 |
 |  | `battery_state` | text | `charging` / `discharging` / `idle` | 1x | 60 |
 |  | `grid_power` | W | Grid import/export (positive = import) | 1x | 60 |
 |  | `offgrid_power` | W | Off-grid load | 1x | 60 |
 |  | `pv_power_es` | W | Solar production reported via ES | 1x | 60 |
 |  | `total_pv_energy` | kWh | Lifetime PV energy | 1x | 60 |
-|  | `total_grid_import` / `total_grid_export` | kWh | Lifetime grid counters | 1x | 60 |
+|  | `total_grid_import` / `total_grid_export` | kWh | Lifetime grid counters, including conversion losses (suited for the Energy dashboard) | 1x | 60 |
 |  | `total_load_energy` | kWh | Lifetime load energy | 1x | 60 |
 | **Energy meter / CT** | `ct_phase_a_power`, `ct_phase_b_power`, `ct_phase_c_power` | W | Per-phase measurements (if CTs installed) | 1x | 60 |
 |  | `ct_total_power` | W | CT aggregate | 1x | 60 |

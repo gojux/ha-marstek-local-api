@@ -68,7 +68,7 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     # Battery sensors
     MarstekSensorEntityDescription(
         key="battery_soc",
-        name="State of charge",
+        name="Battery state of charge",
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
@@ -86,7 +86,7 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     ),
     MarstekSensorEntityDescription(
         key="battery_capacity",
-        name="Remaining capacity",
+        name="Battery remaining capacity",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY_STORAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -95,7 +95,7 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     ),
     MarstekSensorEntityDescription(
         key="battery_rated_capacity",
-        name="Rated capacity",
+        name="Battery rated capacity",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY_STORAGE,
         value_fn=lambda data: _wh_to_kwh(data.get("battery", {}).get("rated_capacity")),
@@ -103,7 +103,7 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     ),
     MarstekSensorEntityDescription(
         key="battery_voltage",
-        name="Voltage",
+        name="Battery voltage",
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -112,7 +112,7 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     ),
     MarstekSensorEntityDescription(
         key="battery_current",
-        name="Current",
+        name="Battery current",
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -121,20 +121,20 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     ),
     MarstekSensorEntityDescription(
         key="battery_error_code",
-        name="Error code",
+        name="Battery error code",
         value_fn=lambda data: data.get("_diagnostic", {}).get("bat_last_error"),
         category="battery",
     ),
     MarstekSensorEntityDescription(
         key="battery_discharge_flag",
-        name="Discharge flag",
+        name="Battery discharge flag",
         value_fn=lambda data: data.get("battery", {}).get("dischrg_flag"),
         category="battery",
     ),
     # Energy System sensors
     MarstekSensorEntityDescription(
         key="battery_power",
-        name="Power",
+        name="Battery power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
@@ -146,25 +146,27 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     # side: after the conversion losses when discharging, before them when charging.
     MarstekSensorEntityDescription(
         key="battery_power_in",
-        name="Power in",
+        name="Battery power in",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: max(0, data.get("es", {}).get("bat_power", 0) or 0),
+        entity_registry_enabled_default=False,
         category="es",
     ),
     MarstekSensorEntityDescription(
         key="battery_power_out",
-        name="Power out",
+        name="Battery power out",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: max(0, -(data.get("es", {}).get("bat_power", 0) or 0)),
+        entity_registry_enabled_default=False,
         category="es",
     ),
     MarstekSensorEntityDescription(
         key="battery_state",
-        name="State",
+        name="Battery state",
         value_fn=lambda data: (
             "charging" if (data.get("es", {}).get("bat_power", 0) or 0) > 0
             else "discharging" if (data.get("es", {}).get("bat_power", 0) or 0) < 0
@@ -174,7 +176,7 @@ SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     ),
     MarstekSensorEntityDescription(
         key="battery_available_capacity",
-        name="Available capacity",
+        name="Battery available capacity",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY_STORAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -457,7 +459,7 @@ AGGREGATE_SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     ),
     MarstekSensorEntityDescription(
         key="system_total_power_in",
-        name="Total power in",
+        name="Total battery power in",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
@@ -466,7 +468,7 @@ AGGREGATE_SENSOR_TYPES: tuple[MarstekSensorEntityDescription, ...] = (
     ),
     MarstekSensorEntityDescription(
         key="system_total_power_out",
-        name="Total power out",
+        name="Total battery power out",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
