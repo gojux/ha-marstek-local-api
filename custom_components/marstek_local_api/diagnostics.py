@@ -10,7 +10,20 @@ from homeassistant.helpers.redact import async_redact_data
 from .const import DATA_COORDINATOR, DOMAIN
 from .coordinator import MarstekDataUpdateCoordinator, MarstekMultiDeviceCoordinator
 
-TO_REDACT = ["wifi_name", "ssid"]
+# Network identifiers (SSID, MAC addresses, IP addresses) must not end up in bug reports
+TO_REDACT = [
+    "wifi_name",
+    "ssid",
+    "ble_mac",
+    "wifi_mac",
+    "ip",
+    "device_ip",
+    "host",
+    "sta_ip",
+    "sta_gate",
+    "sta_mask",
+    "sta_dns",
+]
 
 
 def _command_compatibility_summary(command_stats: dict[str, Any]) -> dict[str, Any]:
@@ -82,9 +95,10 @@ def _coordinator_snapshot(coordinator: MarstekDataUpdateCoordinator) -> dict[str
 
 
 def _multi_diagnostics(coordinator: MarstekMultiDeviceCoordinator) -> dict[str, Any]:
+    # The device MACs are the dict keys, so use a running index instead
     devices: dict[str, Any] = {}
-    for mac, device_coordinator in coordinator.device_coordinators.items():
-        devices[mac] = _coordinator_snapshot(device_coordinator)
+    for index, device_coordinator in enumerate(coordinator.device_coordinators.values(), 1):
+        devices[f"device_{index}"] = _coordinator_snapshot(device_coordinator)
 
     aggregates = coordinator.data.get("aggregates") if coordinator.data else None
 
@@ -109,7 +123,6 @@ async def async_get_config_entry_diagnostics(
     if isinstance(coordinator, MarstekMultiDeviceCoordinator):
         return {
             "entry": {
-                "title": entry.title,
                 "device_count": len(coordinator.device_coordinators),
             },
             "multi": _multi_diagnostics(coordinator),
@@ -118,9 +131,8 @@ async def async_get_config_entry_diagnostics(
     if isinstance(coordinator, MarstekDataUpdateCoordinator):
         return {
             "entry": {
-                "title": entry.title,
+                "title": "**REDACTED**",
                 "device": entry.data.get("device"),
-                "ble_mac": entry.data.get("ble_mac"),
             },
             "device": _coordinator_snapshot(coordinator),
         }

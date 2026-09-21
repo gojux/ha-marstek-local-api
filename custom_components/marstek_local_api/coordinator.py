@@ -47,6 +47,12 @@ ES_ENERGY_KEYS = (
     "total_load_energy",
 )
 
+# Categories that are only polled every UPDATE_INTERVAL_MEDIUM-th update
+MEDIUM_POLLED_CATEGORIES = {
+    "pv": UPDATE_INTERVAL_MEDIUM,
+    "mode": UPDATE_INTERVAL_MEDIUM,
+}
+
 CT_NET_STORAGE_VERSION = 1
 CT_NET_SAVE_DELAY = 60
 
@@ -499,8 +505,12 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
         last_update = self.category_last_updated[category]
         elapsed = time.time() - last_update
 
-        # Calculate max age (update interval * threshold)
-        max_age = self.update_interval.total_seconds() * self.STALENESS_THRESHOLD
+        # Calculate max age (update interval * polls per refresh * threshold): some
+        # categories are only refreshed every UPDATE_INTERVAL_MEDIUM-th update
+        polls_per_refresh = MEDIUM_POLLED_CATEGORIES.get(category, 1)
+        max_age = (
+            self.update_interval.total_seconds() * polls_per_refresh * self.STALENESS_THRESHOLD
+        )
 
         return elapsed < max_age
 

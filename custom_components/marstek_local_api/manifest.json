@@ -5,6 +5,9 @@
     "@jaapp"
   ],
   "config_flow": true,
+  "dependencies": [
+    "network"
+  ],
   "dhcp": [
     {
       "macaddress": "60CF84*"

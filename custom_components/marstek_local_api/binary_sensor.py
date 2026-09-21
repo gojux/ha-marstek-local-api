@@ -173,7 +173,7 @@ class MarstekMultiDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device_mac)},
-            name=f"Marstek {device_data.get('device', 'Device')} {mac_suffix}",
+            name=device_data.get("name") or f"Marstek {device_data.get('device', 'Device')} {mac_suffix}",
             manufacturer="Marstek",
             model=device_data.get("device", "Unknown"),
             sw_version=str(device_data.get("firmware", "Unknown")),

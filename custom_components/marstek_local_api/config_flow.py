@@ -12,7 +12,7 @@ from homeassistant.components import dhcp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.data_entry_flow import AbortFlow, FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
@@ -23,7 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Optional(CONF_HOST): str,
+        vol.Required(CONF_HOST): str,
         vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
     }
 )
@@ -71,6 +71,34 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._discovered_devices: list[dict] = []
+
+    def _abort_if_device_configured(self, ble_mac: str | None, host: str | None = None) -> None:
+        """Abort if a device is already part of any entry, including multi-device entries.
+
+        The unique ID of a multi-device entry is the combination of all BLE MACs, so
+        the regular unique ID check does not notice a battery that is already in it.
+        If the IP address changed, it is updated in the existing entry.
+        """
+        if not ble_mac:
+            return
+        for entry in self._async_current_entries():
+            if entry.data.get("ble_mac") == ble_mac:
+                if host and entry.data.get(CONF_HOST) != host:
+                    self.hass.config_entries.async_update_entry(
+                        entry, data={**entry.data, CONF_HOST: host}
+                    )
+                raise AbortFlow("already_configured")
+            devices = entry.data.get("devices", [])
+            for index, device in enumerate(devices):
+                if device.get("ble_mac") != ble_mac:
+                    continue
+                if host and device.get(CONF_HOST) != host:
+                    updated = list(devices)
+                    updated[index] = {**device, CONF_HOST: host}
+                    self.hass.config_entries.async_update_entry(
+                        entry, data={**entry.data, "devices": updated}
+                    )
+                raise AbortFlow("already_configured")
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -222,6 +250,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Check if already configured
         unique_id = device.get("ble_mac")
+        self._abort_if_device_configured(unique_id)
         if not unique_id:
             _LOGGER.debug("Device %s missing BLE MAC; continuing without duplicate guard", device.get("ip"))
         else:
@@ -248,11 +277,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
+            user_input = {**user_input, CONF_HOST: user_input[CONF_HOST].strip()}
             try:
+                if not user_input[CONF_HOST]:
+                    raise CannotConnect("Host must not be empty")
                 info = await validate_input(self.hass, user_input)
 
                 # Check if already configured
                 unique_id = info.get("ble_mac")
+                self._abort_if_device_configured(unique_id)
                 if not unique_id:
                     _LOGGER.debug("Manual setup for host %s missing BLE MAC; skipping duplicate guard", user_input.get(CONF_HOST))
                 else:
@@ -301,6 +334,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             # Check if already configured
             unique_id = info.get("ble_mac")
+            self._abort_if_device_configured(unique_id, host)
             if not unique_id:
                 _LOGGER.debug("DHCP discovery for host %s missing BLE MAC; skipping duplicate guard", host)
             else:
@@ -431,7 +465,7 @@ class OptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
 
         device_options = {
-            idx: f"{device.get('device', f'Device {idx + 1}')} ({device.get('host')}:{device.get('port')})"
+            idx: f"{device.get('name') or device.get('device', f'Device {idx + 1}')} ({device.get('host')}:{device.get('port')})"
             for idx, device in enumerate(self._devices)
         }
 
@@ -445,12 +479,14 @@ class OptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "device_not_found"
             else:
                 current_device = self._devices[device_index]
-                if current_device.get("device") == new_name:
+                if current_device.get("name", current_device.get("device")) == new_name:
                     return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
                 updated_devices = list(self._devices)
                 updated_device = dict(updated_devices[device_index])
-                updated_device["device"] = new_name
+                # Keep "device" (the model): compatibility scaling and Venus D detection
+                # depend on it and it is refreshed from the device on every poll
+                updated_device["name"] = new_name
                 updated_devices[device_index] = updated_device
 
                 new_data = {**self.config_entry.data, "devices": updated_devices}
@@ -463,7 +499,8 @@ class OptionsFlow(config_entries.OptionsFlow):
 
         default_index = 0
         default_name = (
-            self._devices[default_index].get("device", f"Device {default_index + 1}")
+            self._devices[default_index].get("name")
+            or self._devices[default_index].get("device", f"Device {default_index + 1}")
             if self._devices
             else ""
         )
@@ -492,7 +529,7 @@ class OptionsFlow(config_entries.OptionsFlow):
             errors["base"] = "cannot_remove_last_device"
 
         device_options = {
-            idx: f"{device.get('device', f'Device {idx + 1}')} ({device.get('host')}:{device.get('port')})"
+            idx: f"{device.get('name') or device.get('device', f'Device {idx + 1}')} ({device.get('host')}:{device.get('port')})"
             for idx, device in enumerate(self._devices)
         }
 

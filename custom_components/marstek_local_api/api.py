@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import random
@@ -41,6 +42,9 @@ _shared_transports = {}
 _shared_protocols = {}
 _transport_refcounts = {}
 _clients_by_port = {}  # Map port -> list of clients
+# Serialises creation of the shared endpoint per port: several config entries are set
+# up concurrently and would otherwise each create (and orphan) their own socket.
+_endpoint_locks: dict[int, asyncio.Lock] = {}
 
 
 class MarstekUDPClient:
@@ -84,28 +88,30 @@ class MarstekUDPClient:
         try:
             # Use shared transport/protocol for this port to ensure all clients
             # on the same port can receive all UDP messages
-            if self.port not in _shared_transports:
-                # Create shared UDP endpoint for this port
-                import sys
-                endpoint_kwargs = {
-                    "local_addr": ("0.0.0.0", self.port),
-                    "allow_broadcast": True,
-                }
-                # reuse_port is not supported on Windows
-                if sys.platform != "win32":
-                    endpoint_kwargs["reuse_port"] = True
-                transport, protocol = await loop.create_datagram_endpoint(
-                    lambda: MarstekProtocol(),
-                    **endpoint_kwargs,
-                )
-                _shared_transports[self.port] = transport
-                _shared_protocols[self.port] = protocol
-                _transport_refcounts[self.port] = 0
+            lock = _endpoint_locks.setdefault(self.port, asyncio.Lock())
+            async with lock:
+                if self.port not in _shared_transports:
+                    # Create shared UDP endpoint for this port
+                    import sys
+                    endpoint_kwargs = {
+                        "local_addr": ("0.0.0.0", self.port),
+                        "allow_broadcast": True,
+                    }
+                    # reuse_port is not supported on Windows
+                    if sys.platform != "win32":
+                        endpoint_kwargs["reuse_port"] = True
+                    transport, protocol = await loop.create_datagram_endpoint(
+                        lambda: MarstekProtocol(),
+                        **endpoint_kwargs,
+                    )
+                    _shared_transports[self.port] = transport
+                    _shared_protocols[self.port] = protocol
+                    _transport_refcounts[self.port] = 0
 
-                _LOGGER.info(
-                    "Created shared UDP socket on port %s",
-                    self.port
-                )
+                    _LOGGER.info(
+                        "Created shared UDP socket on port %s",
+                        self.port
+                    )
 
             # Use the shared transport/protocol
             self.transport = _shared_transports[self.port]
@@ -526,7 +532,7 @@ class MarstekUDPClient:
             await self.connect()
 
         # Get broadcast address
-        broadcast_addr = self._get_broadcast_address()
+        broadcast_addr = await self._get_broadcast_address()
 
         self.transport.sendto(
             message.encode(),
@@ -534,83 +540,40 @@ class MarstekUDPClient:
         )
         _LOGGER.debug("Broadcast message: %s", message)
 
-    def _get_broadcast_addresses(self) -> list[str]:
-        """Get all broadcast addresses for available networks.
+    async def _get_broadcast_addresses(self) -> list[str]:
+        """Get the broadcast addresses of all enabled IPv4 networks.
 
-        Uses simple heuristic: broadcast on /24 of primary interface and global broadcast.
-        This works for most home networks and avoids VPN interfaces.
+        Uses the Home Assistant network helper instead of parsing ifconfig, which
+        would block the event loop and does not exist on many systems. Point-to-point
+        (/32) and loopback interfaces are skipped, e.g. VPN tunnels.
         """
-        import struct
-        import subprocess
-
-        broadcast_addrs = set()
+        broadcast_addrs: set[str] = set()
 
         try:
-            # Parse ifconfig to get all network interfaces and their IPs
-            result = subprocess.run(['ifconfig'], capture_output=True, text=True, timeout=2)
-            current_ip = None
+            from homeassistant.components import network
 
-            for line in result.stdout.split('\n'):
-                # Parse inet lines
-                if '\tinet ' in line:
-                    parts = line.strip().split()
-                    if len(parts) >= 2 and parts[0] == 'inet':
-                        ip = parts[1]
-
-                        # Skip loopback
-                        if ip.startswith('127.'):
-                            continue
-
-                        # Parse netmask if present
-                        netmask = None
-                        if 'netmask' in parts:
-                            idx = parts.index('netmask')
-                            if idx + 1 < len(parts):
-                                mask_hex = parts[idx + 1]
-                                # Skip point-to-point /32 (VPN) interfaces
-                                if mask_hex == '0xffffffff':
-                                    continue
-
-                                # Convert hex netmask to dotted decimal
-                                try:
-                                    mask_int = int(mask_hex, 16)
-                                    netmask = socket.inet_ntoa(struct.pack('>I', mask_int))
-                                except (ValueError, OSError):
-                                    pass
-
-                        # Check for explicit broadcast address
-                        if 'broadcast' in parts:
-                            idx = parts.index('broadcast')
-                            if idx + 1 < len(parts):
-                                broadcast_addrs.add(parts[idx + 1])
-                        elif netmask:
-                            # Calculate broadcast address
-                            try:
-                                ip_int = struct.unpack('>I', socket.inet_aton(ip))[0]
-                                mask_int = struct.unpack('>I', socket.inet_aton(netmask))[0]
-                                broadcast_int = ip_int | (~mask_int & 0xffffffff)
-                                broadcast = socket.inet_ntoa(struct.pack('>I', broadcast_int))
-                                broadcast_addrs.add(broadcast)
-                            except (ValueError, OSError):
-                                pass
-                        else:
-                            # Assume /24 network
-                            parts_ip = ip.split(".")
-                            if len(parts_ip) == 4:
-                                broadcast_addrs.add(f"{parts_ip[0]}.{parts_ip[1]}.{parts_ip[2]}.255")
-
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as err:
-            _LOGGER.debug("Could not parse ifconfig: %s, using fallback", err)
+            for adapter in await network.async_get_adapters(self.hass):
+                if not adapter["enabled"]:
+                    continue
+                for ipv4 in adapter["ipv4"]:
+                    address = ipv4["address"]
+                    prefix = ipv4["network_prefix"]
+                    if address.startswith("127.") or prefix >= 32:
+                        continue
+                    interface = ipaddress.ip_interface(f"{address}/{prefix}")
+                    broadcast_addrs.add(str(interface.network.broadcast_address))
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.debug("Could not determine broadcast addresses: %s, using fallback", err)
 
         # If we found nothing, use global broadcast as fallback
         if not broadcast_addrs:
             broadcast_addrs.add("255.255.255.255")
 
-        return list(broadcast_addrs)
+        return sorted(broadcast_addrs)
 
-    def _get_broadcast_address(self) -> str:
+    async def _get_broadcast_address(self) -> str:
         """Get primary broadcast address (for backward compatibility)."""
-        addrs = self._get_broadcast_addresses()
+        addrs = await self._get_broadcast_addresses()
         return addrs[0] if addrs else "255.255.255.255"
 
     async def discover_devices(self, timeout: int = DISCOVERY_TIMEOUT) -> list[dict]:
@@ -665,7 +628,7 @@ class MarstekUDPClient:
 
         try:
             # Get all broadcast addresses
-            broadcast_addrs = self._get_broadcast_addresses()
+            broadcast_addrs = await self._get_broadcast_addresses()
             _LOGGER.debug("Broadcasting to networks: %s", broadcast_addrs)
 
             # Broadcast discovery message repeatedly on all networks
