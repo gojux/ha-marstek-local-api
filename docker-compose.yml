@@ -1,0 +1,21 @@
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2026.9.3
+    ports:
+      - "8123:8123"
+    volumes:
+      - ./.ha-config:/config
+      - ./custom_components/marstek_local_api:/config/custom_components/marstek_local_api
+    restart: unless-stopped
+
+  # One-off unit tests against the real Home Assistant runtime:
+  #   docker compose run --rm test
+  test:
+    image: ghcr.io/home-assistant/home-assistant:2026.9.3
+    profiles: ["test"]
+    working_dir: /repo
+    volumes:
+      - .:/repo:ro
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    entrypoint: ["python3", "-m", "unittest", "discover", "-s", "test", "-p", "test_ct_net.py", "-v"]

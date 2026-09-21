@@ -42,3 +42,6 @@ test/logs/
 
 # Git worktrees
 .worktrees/
+
+# Local Home Assistant dev config (docker compose)
+.ha-config/
