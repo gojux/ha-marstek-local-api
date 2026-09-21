@@ -204,16 +204,19 @@ class MarstekMultiDeviceCoordinator(DataUpdateCoordinator):
         else:
             aggregates["combined_state"] = "idle"
 
-        # Energy aggregates. If any device reports an invalid (None) value the sum is
-        # unknown: a partial sum would drop and jump back, which total_increasing
-        # sensors record as a reset and a huge spike.
+        # Energy aggregates. If any device has no ES data yet or reports an invalid
+        # (None) value the sum is unknown: a partial sum would drop and jump back,
+        # which total_increasing sensors record as a reset and a huge spike.
         for aggregate_key, es_key in (
             ("total_pv_energy", "total_pv_energy"),
             ("total_grid_import", "total_grid_input_energy"),
             ("total_grid_export", "total_grid_output_energy"),
             ("total_load_energy", "total_load_energy"),
         ):
-            values = [d.get("es", {}).get(es_key, 0) for d in all_device_data]
+            values = [
+                es.get(es_key, 0) if (es := (c.data or {}).get("es")) is not None else None
+                for c in self.device_coordinators.values()
+            ]
             aggregates[aggregate_key] = (
                 None if any(v is None for v in values) else sum(values)
             )
@@ -382,9 +385,14 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
             last_in = self._ct_net["last_input"]
             last_out = self._ct_net["last_output"]
             if last_in is not None and last_out is not None:
-                net = (cur_in - last_in) - (cur_out - last_out)
-                key = "import" if net > 0 else "export"
-                self._ct_net[key] += abs(net)
+                delta_in = cur_in - last_in
+                delta_out = cur_out - last_out
+                # A decreasing counter means a device reset (e.g. while HA was down):
+                # only re-baseline, netting a negative delta would create a spike.
+                if delta_in >= 0 and delta_out >= 0:
+                    net = delta_in - delta_out
+                    key = "import" if net > 0 else "export"
+                    self._ct_net[key] += abs(net)
             self._ct_net["last_input"] = cur_in
             self._ct_net["last_output"] = cur_out
             self._ct_net_store.async_delay_save(lambda: dict(self._ct_net), CT_NET_SAVE_DELAY)
@@ -571,22 +579,11 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
                 es_status = None
 
             if es_status:
-                # Scale firmware-dependent values
+                # Scale firmware-dependent values (the energy counters are scaled and
+                # validated below)
                 if "bat_power" in es_status:
                     es_status["bat_power"] = self.compatibility.scale_value(
                         es_status["bat_power"], "bat_power"
-                    )
-                if "total_grid_input_energy" in es_status:
-                    es_status["total_grid_input_energy"] = self.compatibility.scale_value(
-                        es_status["total_grid_input_energy"], "total_grid_input_energy"
-                    )
-                if "total_grid_output_energy" in es_status:
-                    es_status["total_grid_output_energy"] = self.compatibility.scale_value(
-                        es_status["total_grid_output_energy"], "total_grid_output_energy"
-                    )
-                if "total_load_energy" in es_status:
-                    es_status["total_load_energy"] = self.compatibility.scale_value(
-                        es_status["total_load_energy"], "total_load_energy"
                     )
 
                 for key in ES_ENERGY_KEYS:

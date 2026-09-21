@@ -43,7 +43,7 @@ class CtNetEnergyTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self._tmp.cleanup()
 
-    def _make_coordinator(self):
+    def _make_coordinator(self, device_model=DEVICE_MODEL, firmware=FIRMWARE):
         api = MagicMock()
         api.get_device_info = AsyncMock(return_value=None)
         api.get_es_status = AsyncMock(return_value=None)
@@ -54,8 +54,8 @@ class CtNetEnergyTest(unittest.IsolatedAsyncioTestCase):
             self.hass,
             api,
             device_name="VenusE 3.0",
-            firmware_version=FIRMWARE,
-            device_model=DEVICE_MODEL,
+            firmware_version=firmware,
+            device_model=device_model,
             device_mac="aabbccddeeff",
         )
         return coordinator, api
@@ -114,6 +114,21 @@ class CtNetEnergyTest(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(em["net_import_energy"], 3000.0)
         self.assertAlmostEqual(em["net_export_energy"], 0.0)
 
+    async def test_counter_reset_only_rebaselines(self):
+        coordinator, api = self._make_coordinator()
+        await self._poll(coordinator, api, 100_000, 50_000)
+        await self._poll(coordinator, api, 130_000, 60_000)  # import 2000 Wh
+        await coordinator._ct_net_store.async_save(dict(coordinator._ct_net))
+
+        # CT counters were reset while HA was down: no export spike
+        coordinator2, api2 = self._make_coordinator()
+        em = await self._poll(coordinator2, api2, 10_000, 5_000)
+        self.assertAlmostEqual(em["net_import_energy"], 2000.0)
+        self.assertAlmostEqual(em["net_export_energy"], 0.0)
+        # ... and it continues from the new baseline
+        em = await self._poll(coordinator2, api2, 20_000, 5_000)
+        self.assertAlmostEqual(em["net_import_energy"], 3000.0)
+
 
 class EsEnergyPlausibilityTest(unittest.IsolatedAsyncioTestCase):
     """ES lifetime counters must never expose garbage values (statistics outliers)."""
@@ -125,6 +140,14 @@ class EsEnergyPlausibilityTest(unittest.IsolatedAsyncioTestCase):
         await CtNetEnergyTest.asyncTearDown(self)
 
     _make_coordinator = CtNetEnergyTest._make_coordinator
+
+    async def test_energy_is_scaled_exactly_once(self):
+        # HW 2.0 FW>=154 divides by 0.01 (raw x 100 = Wh)
+        coordinator, api = self._make_coordinator(device_model="VenusE 2.0", firmware=200)
+        es = await self._poll_es(coordinator, api, 100_000)
+        self.assertAlmostEqual(es["total_grid_input_energy"], 10_000_000)
+        es = await self._poll_es(coordinator, api, 100_005)  # +500 Wh
+        self.assertAlmostEqual(es["total_grid_input_energy"], 10_000_500)
 
     async def _poll_es(self, coordinator, api, grid_in):
         api.get_es_status.return_value = {
@@ -171,6 +194,9 @@ class EsEnergyPlausibilityTest(unittest.IsolatedAsyncioTestCase):
         good = MagicMock(data={"es": {"total_grid_input_energy": 1000}})
         bad = MagicMock(data={"es": {"total_grid_input_energy": None}})
         multi.device_coordinators = {"a": good, "b": bad}
+        self.assertIsNone(multi._calculate_aggregates()["total_grid_import"])
+        # A device without ES data yet is unknown too, not a silent 0
+        bad.data = {"battery": {}}
         self.assertIsNone(multi._calculate_aggregates()["total_grid_import"])
         bad.data = {"es": {"total_grid_input_energy": 2000}}
         self.assertEqual(multi._calculate_aggregates()["total_grid_import"], 3000)
