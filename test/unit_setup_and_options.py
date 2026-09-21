@@ -4,6 +4,8 @@ Run inside the Home Assistant image: docker compose run --rm test
 """
 from __future__ import annotations
 
+from datetime import timedelta
+import json
 import os
 import sys
 import tempfile
@@ -13,10 +15,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from homeassistant.core import HomeAssistant  # noqa: E402
+from homeassistant.data_entry_flow import AbortFlow  # noqa: E402
 from homeassistant.exceptions import ConfigEntryNotReady  # noqa: E402
 from homeassistant.helpers import frame  # noqa: E402
 
 import custom_components.marstek_local_api as integration  # noqa: E402
+from custom_components.marstek_local_api import diagnostics  # noqa: E402
 from custom_components.marstek_local_api.config_flow import (  # noqa: E402
     ConfigFlow,
     OptionsFlow,
@@ -63,6 +67,65 @@ class OptionsFlowTest(unittest.IsolatedAsyncioTestCase):
         # Device changes must hand back the existing options instead of wiping them
         result = await flow.async_step_rename_device({"device": 0, "name": "Left"})
         self.assertEqual(result["data"], {"scan_interval": 300})
+
+        # The custom name must not overwrite the model in "device"
+        new_data = flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
+        self.assertEqual(new_data["devices"][0]["name"], "Left")
+        self.assertEqual(new_data["devices"][0]["device"], "VenusE 3.0")
+
+
+class ConfigFlowTest(unittest.IsolatedAsyncioTestCase):
+    def _make_flow(self, entries):
+        flow = ConfigFlow()
+        flow.hass = MagicMock()
+        flow._async_current_entries = lambda: entries
+        return flow
+
+    def test_device_inside_multi_device_entry_is_detected(self):
+        entry = MagicMock(data={"devices": [dict(d) for d in DEVICES]})
+        flow = self._make_flow([entry])
+
+        with self.assertRaises(AbortFlow):
+            flow._abort_if_device_configured("bb")
+        flow._abort_if_device_configured("cc")  # unknown device: no abort
+        flow._abort_if_device_configured(None)
+
+    def test_ip_change_is_stored_for_known_device(self):
+        entry = MagicMock(data={"devices": [dict(d) for d in DEVICES]})
+        flow = self._make_flow([entry])
+
+        with self.assertRaises(AbortFlow):
+            flow._abort_if_device_configured("bb", "192.0.2.99")
+        data = flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
+        self.assertEqual(data["devices"][1]["host"], "192.0.2.99")
+        self.assertEqual(data["devices"][0]["host"], "192.0.2.1")
+
+    async def test_blank_manual_host_shows_error(self):
+        flow = self._make_flow([])
+        flow.async_show_form = lambda **kwargs: kwargs
+        result = await flow.async_step_manual({"host": "  ", "port": 30000})
+        self.assertEqual(result["errors"], {"base": "cannot_connect"})
+
+
+class DiagnosticsTest(unittest.TestCase):
+    def test_network_identifiers_are_redacted(self):
+        device_coordinator = MagicMock()
+        device_coordinator.data = {
+            "device": {"ble_mac": "aabbccddeeff", "wifi_mac": "112233445566", "ip": "192.0.2.1",
+                       "wifi_name": "HomeWifi"},
+            "wifi": {"ssid": "HomeWifi", "sta_ip": "192.0.2.1", "sta_gate": "192.0.2.254"},
+        }
+        device_coordinator.api.get_all_command_stats.return_value = {}
+        device_coordinator.update_interval = timedelta(seconds=60)
+        multi = MagicMock(data={})
+        multi.update_interval = timedelta(seconds=60)
+        multi.device_coordinators = {"aabbccddeeff": device_coordinator}
+
+        result = json.dumps(diagnostics._multi_diagnostics(multi), default=str)
+
+        for secret in ("aabbccddeeff", "112233445566", "192.0.2", "HomeWifi"):
+            self.assertNotIn(secret, result)
+        self.assertIn("device_1", result)
 
 
 class SetupTest(unittest.IsolatedAsyncioTestCase):
