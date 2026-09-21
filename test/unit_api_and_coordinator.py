@@ -18,6 +18,7 @@ from homeassistant.core import HomeAssistant  # noqa: E402
 from homeassistant.helpers import frame  # noqa: E402
 
 from custom_components.marstek_local_api import api as api_module  # noqa: E402
+from custom_components.marstek_local_api import sensor as sensor_module  # noqa: E402
 from custom_components.marstek_local_api.coordinator import (  # noqa: E402
     MarstekDataUpdateCoordinator,
 )
@@ -100,6 +101,36 @@ class StalenessTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(coordinator.is_category_fresh("pv"))
         # Polled every update, so 250 s is stale (limit: 3 x 60 s)
         self.assertFalse(coordinator.is_category_fresh("es"))
+
+
+class BatteryPowerSensorTest(unittest.TestCase):
+    """Battery in/out/state follow bat_power (battery side), not ongrid_power (AC side)."""
+
+    def _values(self, bat_power, ongrid_power):
+        data = {"es": {"bat_power": bat_power, "ongrid_power": ongrid_power}}
+        descriptions = {d.key: d for d in sensor_module.SENSOR_TYPES}
+        return {
+            key: descriptions[key].value_fn(data)
+            for key in ("battery_power_in", "battery_power_out", "battery_state")
+        }
+
+    def test_charging(self):
+        self.assertEqual(
+            self._values(bat_power=1000, ongrid_power=-1050),
+            {"battery_power_in": 1000, "battery_power_out": 0, "battery_state": "charging"},
+        )
+
+    def test_discharging(self):
+        self.assertEqual(
+            self._values(bat_power=-800, ongrid_power=760),
+            {"battery_power_in": 0, "battery_power_out": 800, "battery_state": "discharging"},
+        )
+
+    def test_idle(self):
+        self.assertEqual(
+            self._values(bat_power=0, ongrid_power=5),
+            {"battery_power_in": 0, "battery_power_out": 0, "battery_state": "idle"},
+        )
 
 
 if __name__ == "__main__":
